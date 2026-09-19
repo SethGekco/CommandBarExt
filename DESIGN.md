@@ -1,6 +1,6 @@
 # CommandBarExt — new tactical-bar buttons + unit commands
 
-Status: DESIGN (researched 2026-09-18, nothing built yet)
+Status: PHASE 0 WRITTEN (2026-09-19) — probe committed locally; blocked on GitHub repo creation (permission), then CI + deploy
 
 ## Goal
 
