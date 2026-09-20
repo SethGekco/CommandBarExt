@@ -119,6 +119,17 @@ DEFINE_HOOK(0x6D0827, AdvancedCommandBar_Update_NewButtonClicked, 0x6)
 {
 	GET(const int, index, EAX);
 
+	// Phase 0.1 calibration: the first run proved everything up to the click,
+	// but a click on our button never logged. Log EVERY index that reaches
+	// this dispatcher (budgeted) so a click on a KNOWN button (Deploy) shows
+	// whether EAX here is the button index or something else entirely.
+	static int dispatchBudget = 64;
+	if (dispatchBudget > 0)
+	{
+		--dispatchBudget;
+		Debug::Log("[CommandBarExt] Update dispatch: EAX=%d\n", index);
+	}
+
 	if (auto pBtn = CommandBarProbe::FromID(index))
 	{
 		auto pShape = ShapeButtonClass::GetButton(index);
@@ -160,6 +171,26 @@ DEFINE_HOOK(0x6D14DD, AdvancedCommandBar_InitToolTip_NewButtons, 0x5)
 		if (auto pShape = ShapeButtonClass::GetButton(btn.ID))
 			ShapeButtonClass::SetToolTip(pShape, btn.TipName);
 	}
+
+	// Phase 0.1 diagnosis: dump our gadget's state next to a known-good
+	// button's (Deploy). Whatever differs -- Disabled, input Flags, control
+	// ID, list linkage -- is the reason clicks never dispatched for us.
+	auto dump = [](const char* tag, int index)
+	{
+		auto p = ShapeButtonClass::GetButton(index);
+		if (!p)
+		{
+			Debug::Log("[CommandBarExt] state %s(idx %d): NULL\n", tag, index);
+			return;
+		}
+		Debug::Log("[CommandBarExt] state %s(idx %d): ID=%d pos=%d,%d %dx%d "
+			"Disabled=%d Flags=%X Sticky=%d shpLoaded=%d next=%p prev=%p\n",
+			tag, index, p->ID, p->X, p->Y, p->Width, p->Height,
+			p->Disabled, (unsigned int)p->Flags, p->IsSticky,
+			p->IsShapeLoaded, (void*)p->GetNext(), (void*)p->GetPrev());
+	};
+	dump("Deploy", ShapeButtonClass::FindIndex("Deploy"));
+	dump("Hunt", 12);
 
 	return 0;
 }
