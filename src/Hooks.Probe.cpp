@@ -29,6 +29,12 @@
 #include <ShapeButtonClass.h>
 #include <GameStrings.h>
 
+#include <EventClass.h>
+#include <FootClass.h>
+#include <HouseClass.h>
+#include <ObjectClass.h>
+#include <Helpers/Cast.h>
+
 #include <Commands/Commands.h> // Phobos submodule: MakeCommand<> + CATEGORY_*
 
 #include <Syringe.h>
@@ -51,6 +57,7 @@ namespace CommandBarProbe
 	static const NewButton Buttons[] =
 	{
 		{ "Hunt", "Tip:Hunt", false, 12 },
+		{ "AggressiveStance", "Tip:AggStance", false, 13 },
 	};
 
 	static const NewButton* FromID(int id)
@@ -59,6 +66,67 @@ namespace CommandBarProbe
 			if (btn.ID == id)
 				return &btn;
 		return nullptr;
+	}
+
+	// Phase 1: Hunt = vanilla Mission::Hunt via MegaMission events, one per
+	// selected mobile armed techno we own. Events carry the whole decision,
+	// so this is multiplayer-synced by construction.
+	static void ExecuteHunt()
+	{
+		int count = 0;
+		for (const auto& pObject : ObjectClass::CurrentObjects())
+		{
+			auto pFoot = abstract_cast<FootClass*>(pObject);
+			if (!pFoot || pFoot->Berzerk || !pFoot->IsArmed()
+				|| !pFoot->Owner->IsControlledByCurrentPlayer())
+			{
+				continue;
+			}
+
+			EventClass event(HouseClass::CurrentPlayer->ArrayIndex,
+				TargetClass(pFoot), Mission::Hunt,
+				TargetClass(), TargetClass(), TargetClass());
+			EventClass::OutList.Add(event);
+
+			// Voice feedback from the first unit ordered, vanilla-style.
+			if (count == 0)
+			{
+				auto pType = pFoot->GetTechnoType();
+				TypeList<int>& voices = pType->VoiceAttack.Count
+					? pType->VoiceAttack : pType->VoiceMove;
+				if (voices.Count)
+					pFoot->QueueVoice(voices.GetItem(0));
+			}
+			++count;
+		}
+
+		Debug::Log("[CommandBarExt] Hunt ordered for %d unit(s)\n", count);
+	}
+
+	// Aggressive Stance: no cross-DLL linkage -- YRAggressiveStance registers
+	// its command in the shared CommandClass::Array; find it by name at
+	// runtime and fire it. Degrades to a logged no-op if that DLL is absent.
+	static void ExecuteNamedCommand(const char* name)
+	{
+		for (const auto& pCommand : CommandClass::Array)
+		{
+			if (pCommand && _strcmpi(pCommand->GetName(), name) == 0)
+			{
+				pCommand->Execute(static_cast<WWKey>(0));
+				return;
+			}
+		}
+		Debug::Log("[CommandBarExt] command '%s' not found in "
+			"CommandClass::Array -- is its DLL loaded?\n", name);
+	}
+
+	static void ExecuteButton(int id)
+	{
+		switch (id)
+		{
+		case 12: ExecuteHunt(); break;
+		case 13: ExecuteNamedCommand("AggressiveStance"); break;
+		}
 	}
 }
 
@@ -135,7 +203,7 @@ DEFINE_HOOK(0x6D0827, AdvancedCommandBar_Update_NewButtonClicked, 0x6)
 		auto pShape = ShapeButtonClass::GetButton(index);
 		Debug::Log("[CommandBarExt] button %d ('%s') clicked, IsOn=%d\n",
 			index, pBtn->Name, pShape ? pShape->IsOn : -1);
-		// Phase 1 wires this to the matching CommandClass. Probe: log only.
+		CommandBarProbe::ExecuteButton(index);
 	}
 
 	return 0;
@@ -224,7 +292,8 @@ public:
 
 	virtual void Execute(WWKey eInput) const override
 	{
-		Debug::Log("[CommandBarExt] HuntUnits command executed (probe: no-op)\n");
+		Debug::Log("[CommandBarExt] HuntUnits command executed\n");
+		CommandBarProbe::ExecuteHunt();
 	}
 };
 
