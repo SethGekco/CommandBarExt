@@ -73,23 +73,53 @@ namespace CommandBarProbe
 	// so this is multiplayer-synced by construction.
 	static void ExecuteHunt()
 	{
-		int count = 0;
+		// Rex reports a repro where only ONE of N selected units went
+		// hunting. Three suspects, and this logging separates them:
+		//   filter  -- eligible < selected means our own gate dropped units
+		//              (also logs WHY per skipped unit);
+		//   queue   -- OutList.Add returns false silently when its 128
+		//              slots are full (queued vs eligible mismatch);
+		//   engine  -- all adds succeed yet units stay put: the MegaMission
+		//              pre-send merge folds identical events into one
+		//              whom-list entry, and the expansion is the suspect.
+		const int selected = ObjectClass::CurrentObjects.Count;
+		const int outBefore = EventClass::OutList.Count;
+		int eligible = 0;
+		int queued = 0;
+
 		for (const auto pObject : ObjectClass::CurrentObjects)
 		{
 			auto pFoot = abstract_cast<FootClass*>(pObject);
 			if (!pFoot || pFoot->Berzerk || !pFoot->IsArmed()
 				|| !pFoot->Owner->IsControlledByCurrentPlayer())
 			{
+				if (auto pTechno = abstract_cast<TechnoClass*>(pObject))
+				{
+					Debug::Log("[CommandBarExt] Hunt skip %s: foot=%d "
+						"berzerk=%d armed=%d mine=%d\n",
+						pTechno->GetTechnoType()->ID,
+						pFoot != nullptr,
+						pTechno->Berzerk, pTechno->IsArmed(),
+						pTechno->Owner->IsControlledByCurrentPlayer());
+				}
 				continue;
 			}
+
+			++eligible;
 
 			EventClass event(HouseClass::CurrentPlayer->ArrayIndex,
 				TargetClass(pFoot), Mission::Hunt,
 				TargetClass(), TargetClass(), TargetClass());
-			EventClass::OutList.Add(event);
+			const bool added = EventClass::OutList.Add(event);
+			if (added)
+				++queued;
+
+			Debug::Log("[CommandBarExt] Hunt order %s (mission now %d) "
+				"add=%d\n", pFoot->GetTechnoType()->ID,
+				(int)pFoot->CurrentMission, added);
 
 			// Voice feedback from the first unit ordered, vanilla-style.
-			if (count == 0)
+			if (eligible == 1)
 			{
 				auto pType = pFoot->GetTechnoType();
 				TypeList<int>& voices = pType->VoiceAttack.Count
@@ -97,10 +127,11 @@ namespace CommandBarProbe
 				if (voices.Count)
 					pFoot->QueueVoice(voices.GetItem(0));
 			}
-			++count;
 		}
 
-		Debug::Log("[CommandBarExt] Hunt ordered for %d unit(s)\n", count);
+		Debug::Log("[CommandBarExt] Hunt: selected=%d eligible=%d queued=%d "
+			"OutList %d -> %d\n", selected, eligible, queued,
+			outBefore, EventClass::OutList.Count);
 	}
 
 	// Aggressive Stance: no cross-DLL linkage -- YRAggressiveStance registers
