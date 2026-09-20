@@ -74,7 +74,7 @@ namespace CommandBarProbe
 	static void ExecuteHunt()
 	{
 		int count = 0;
-		for (const auto& pObject : ObjectClass::CurrentObjects())
+		for (const auto pObject : ObjectClass::CurrentObjects)
 		{
 			auto pFoot = abstract_cast<FootClass*>(pObject);
 			if (!pFoot || pFoot->Berzerk || !pFoot->IsArmed()
@@ -108,7 +108,7 @@ namespace CommandBarProbe
 	// runtime and fire it. Degrades to a logged no-op if that DLL is absent.
 	static void ExecuteNamedCommand(const char* name)
 	{
-		for (const auto& pCommand : CommandClass::Array)
+		for (const auto pCommand : CommandClass::Array)
 		{
 			if (pCommand && _strcmpi(pCommand->GetName(), name) == 0)
 			{
