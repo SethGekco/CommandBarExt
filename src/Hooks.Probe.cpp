@@ -32,6 +32,8 @@
 #include <EventClass.h>
 #include <FootClass.h>
 #include <HouseClass.h>
+#include <BulletClass.h>
+#include <BulletTypeClass.h>
 #include <MapClass.h>
 #include <ObjectClass.h>
 #include <WarheadTypeClass.h>
@@ -245,11 +247,19 @@ namespace CommandBarProbe
 	// -----------------------------------------------------------------------
 	static void ExecuteEffectProbe()
 	{
+		// Deliberately NOT a WeaponType: gamemd has no [WeaponTypes] or
+		// [Projectiles] list (only "Warheads" exists as a list string), so
+		// weapons and projectiles are parsed on demand at their referencing
+		// site. A brand-new [CBEProbeWeapon] section would allocate empty and
+		// silently do nothing. InvisibleAll is already parsed (17 weapons use
+		// it) and CBEProbeWH is parsed because it IS in the [Warheads] list.
+		auto pProjectile = BulletTypeClass::FindOrAllocate("InvisibleAll");
 		auto pWarhead = WarheadTypeClass::FindOrAllocate("CBEProbeWH");
-		if (!pWarhead)
+
+		if (!pProjectile || !pWarhead)
 		{
-			Debug::Log("[CommandBarExt] EffectProbe: warhead CBEProbeWH not "
-				"found — is it listed in [Warheads]?\n");
+			Debug::Log("[CommandBarExt] EffectProbe: projectile/warhead "
+				"lookup failed — is CBEProbeWH listed in [Warheads]?\n");
 			return;
 		}
 
@@ -264,17 +274,29 @@ namespace CommandBarProbe
 				continue;
 			}
 
-			const CoordStruct coords = pTechno->GetCoords();
+			// Bullet aimed at the techno itself: Phobos' route 2 detonates on
+			// pBullet->Target and nothing else, so a unit parked on a bridge,
+			// inside a building's footprint or sharing a cell cannot leak the
+			// effect onto its neighbours.
+			auto pBullet = pProjectile->CreateBullet(pTechno, pTechno,
+				0 /*damage: we want the effect, not the hit*/, pWarhead,
+				100 /*speed*/, false /*bright*/);
 
-			// Damage 0: we want the warhead's effects, not its damage.
-			MapClass::DamageArea(coords, 0, pTechno, pWarhead, false,
-				pTechno->Owner);
+			if (!pBullet)
+				continue;
+
+			// Route 2 also range-checks the bullet against its target
+			// (<= 64 leptons), so the bullet must actually BE at the unit.
+			const CoordStruct coords = pTechno->GetCoords();
+			pBullet->SetLocation(coords);
+			pBullet->Detonate(coords);
+			pBullet->UnInit();
 
 			++affected;
 		}
 
 		Debug::Log("[CommandBarExt] EffectProbe: detonated CBEProbeWH on %d "
-			"unit(s) — expect a green tint if Phobos applied the effect\n",
+			"targeted unit(s) — expect a green tint ONLY on those units\n",
 			affected);
 	}
 
