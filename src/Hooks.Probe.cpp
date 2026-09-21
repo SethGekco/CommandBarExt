@@ -294,6 +294,131 @@ DEFINE_HOOK(0x6D14DD, AdvancedCommandBar_InitToolTip_NewButtons, 0x5)
 	return 0;
 }
 
+// ---------------------------------------------------------------------------
+// Hunt fallback for player-owned units — ROOT CAUSE VERIFIED 2026-09-20.
+//
+// Symptom: every selected unit accepts Mission::Hunt (the in-game log shows
+// all 119 sitting on mission 15 on the next click), yet most never move.
+//
+// Why, from gamemd: FootClass::Mission_Hunt (0x4D5350) only acts when the
+// unit can auto-acquire a target right now (the scan at 0x709820). When that
+// scan fails it drops to the fallback at 0x4D54EE, which asks
+// 0x50B730 "is this house player-controlled?" and then:
+//
+//   AI house    -> 0x4D5506: take the *human player's* base centre
+//                  (HouseClass @ 0xA83D4C, base cell via 0x50DEF0),
+//                  SetDestination(cell) + ForceMission(Move). This is how
+//                  AI hunters cross the map — and why rulesmd's StupidHunt
+//                  comment reads "should just run towards the player".
+//   HUMAN house -> 0x4D5578: idle. Nothing. By design: Hunt is an AI mission.
+//
+// So vanilla Hunt for a player is "shoot what is already in range", never
+// "go find them". The fix reuses the engine's own fallback, but aimed at an
+// ENEMY base instead of the local player's:
+//
+//   hook A (0x4D54EE) — for player-controlled owners, skip BOTH bails and
+//                       resume at 0x4D5506 so the engine does the work;
+//   hook B (0x4D5514) — swap the hardcoded local-player house in ECX for the
+//                       enemy house we picked.
+//
+// Determinism (this is sim code, it must not desync): the house is chosen by
+// walking HouseClass::Array in index order and taking the nearest enemy base
+// centre, ties broken by the lower array index. No local-player state, no
+// unsynced randomness. AI units are untouched — hook A returns 0 for them,
+// so their vanilla behaviour (and the game's balance) is unchanged.
+// ---------------------------------------------------------------------------
+
+namespace HuntFix
+{
+	// 0x50DEF0 — HouseClass::GetBaseCenter(CellStruct* out) -> CellStruct*.
+	// __fastcall with a dummy EDX is the safe way to call a thiscall game
+	// address (memory: __stdcall corrupts 4 bytes of stack per call).
+	using GetBaseCenter_t = CellStruct* (__fastcall*)(HouseClass*, void*, CellStruct*);
+	static const auto GetBaseCenter = reinterpret_cast<GetBaseCenter_t>(0x50DEF0);
+
+	// Set by hook A, consumed by hook B on the immediately following
+	// instructions — same frame, same thread, no lifetime concerns.
+	static HouseClass* PendingTargetHouse = nullptr;
+
+	static bool IsHuntableEnemy(HouseClass* pOwner, HouseClass* pHouse)
+	{
+		return pHouse && pHouse != pOwner && !pHouse->Defeated
+			&& !pHouse->IsNeutral() && !pHouse->IsObserver()
+			&& !pOwner->IsAlliedWith(pHouse);
+	}
+
+	static HouseClass* PickEnemyHouse(FootClass* pFoot)
+	{
+		auto pOwner = pFoot->Owner;
+		if (!pOwner)
+			return nullptr;
+
+		CellStruct here {};
+		pFoot->GetMapCoords(&here);
+
+		HouseClass* pBest = nullptr;
+		int bestDistance = 0;
+
+		for (const auto pHouse : HouseClass::Array)
+		{
+			if (!IsHuntableEnemy(pOwner, pHouse))
+				continue;
+
+			CellStruct base {};
+			if (!GetBaseCenter(pHouse, nullptr, &base))
+				continue;
+			if (base.X == 0 && base.Y == 0)
+				continue;
+
+			const int dx = base.X - here.X;
+			const int dy = base.Y - here.Y;
+			const int distance = dx * dx + dy * dy;
+
+			// Strictly-less keeps the lowest array index on a tie.
+			if (!pBest || distance < bestDistance)
+			{
+				pBest = pHouse;
+				bestDistance = distance;
+			}
+		}
+
+		return pBest;
+	}
+}
+
+DEFINE_HOOK(0x4D54EE, FootClass_Mission_Hunt_PlayerSeeksEnemy, 0x6)
+{
+	enum { UseEngineFallback = 0x4D5506, Vanilla = 0 };
+
+	GET(FootClass*, pFoot, ESI);
+
+	HuntFix::PendingTargetHouse = nullptr;
+
+	if (!pFoot || !pFoot->Owner || !pFoot->Owner->IsControlledByHuman())
+		return Vanilla;
+
+	auto pEnemy = HuntFix::PickEnemyHouse(pFoot);
+	if (!pEnemy)
+		return Vanilla; // nothing to hunt — idle exactly like vanilla
+
+	HuntFix::PendingTargetHouse = pEnemy;
+	return UseEngineFallback;
+}
+
+DEFINE_HOOK(0x4D5514, FootClass_Mission_Hunt_RetargetHouse, 0x6)
+{
+	enum { SkipStolenLoad = 0x4D551A };
+
+	if (auto pEnemy = HuntFix::PendingTargetHouse)
+	{
+		HuntFix::PendingTargetHouse = nullptr;
+		R->ECX(pEnemy);
+		return SkipStolenLoad;
+	}
+
+	return 0; // AI path — leave the vanilla local-player house alone
+}
+
 // --- 6. Command registration ----------------------------------------------
 // Registered as a CommandClass too, so "Hunt Units" appears in the hotkey
 // configuration dialog for free. Phase 0 Execute is log-only; Phase 1 issues
