@@ -32,7 +32,9 @@
 #include <EventClass.h>
 #include <FootClass.h>
 #include <HouseClass.h>
+#include <MapClass.h>
 #include <ObjectClass.h>
+#include <WarheadTypeClass.h>
 #include <Helpers/Cast.h>
 
 #include <vector>
@@ -60,6 +62,7 @@ namespace CommandBarProbe
 	{
 		{ "Hunt", "Tip:Hunt", false, 12 },
 		{ "AggressiveStance", "Tip:AggStance", false, 13 },
+		{ "EffectProbe", "Tip:EffectProbe", false, 14 },
 	};
 
 	static const NewButton* FromID(int id)
@@ -215,12 +218,73 @@ namespace CommandBarProbe
 			"CommandClass::Array -- is its DLL loaded?\n", name);
 	}
 
+	// -----------------------------------------------------------------------
+	// Phase 3 probe: can a bar button inflict Phobos AttachEffects?
+	//
+	// We cannot call Phobos' AttachEffect code — its 1193 exports are all
+	// Syringe hook stubs, there is no API to link against. But Phobos applies
+	// AttachEffects from a WarheadType, off its own hook on
+	// MapClass::DamageArea (0x489286 -> WarheadTypeExt::Detonate ->
+	// ApplyAttachEffects). So detonating an INI-named warhead on the unit
+	// gets the whole feature set with zero coupling to Phobos internals.
+	//
+	// The gate that path checks, WarheadTypeExt::InDamageArea, is initialised
+	// to true and only cleared transiently while a bullet detonates, so a
+	// direct DamageArea call from here should qualify. That is the specific
+	// claim this probe tests.
+	//
+	// rulesmd carries the matching test content (appended 2026-09-21):
+	// [CBEProbeWH] AttachEffect.AttachTypes=CBEProbeEffect, registered as
+	// 106= in the real [Warheads] list, granting a green tint + 1.5x speed
+	// and firepower for ~30s. Unmistakable on screen if it works.
+	//
+	// PROBE ONLY: this applies the warhead locally instead of going through
+	// the event queue, which is fine for a skirmish and wrong for
+	// multiplayer. The real feature routes it through a synced event like
+	// everything else — see DESIGN.md.
+	// -----------------------------------------------------------------------
+	static void ExecuteEffectProbe()
+	{
+		auto pWarhead = WarheadTypeClass::FindOrAllocate("CBEProbeWH");
+		if (!pWarhead)
+		{
+			Debug::Log("[CommandBarExt] EffectProbe: warhead CBEProbeWH not "
+				"found — is it listed in [Warheads]?\n");
+			return;
+		}
+
+		int affected = 0;
+
+		for (const auto pObject : ObjectClass::CurrentObjects)
+		{
+			auto pTechno = abstract_cast<TechnoClass*>(pObject);
+			if (!pTechno || !pTechno->Owner
+				|| !pTechno->Owner->IsControlledByCurrentPlayer())
+			{
+				continue;
+			}
+
+			const CoordStruct coords = pTechno->GetCoords();
+
+			// Damage 0: we want the warhead's effects, not its damage.
+			MapClass::DamageArea(coords, 0, pTechno, pWarhead, false,
+				pTechno->Owner);
+
+			++affected;
+		}
+
+		Debug::Log("[CommandBarExt] EffectProbe: detonated CBEProbeWH on %d "
+			"unit(s) — expect a green tint if Phobos applied the effect\n",
+			affected);
+	}
+
 	static void ExecuteButton(int id)
 	{
 		switch (id)
 		{
 		case 12: ExecuteHunt(); break;
 		case 13: ExecuteNamedCommand("AggressiveStance"); break;
+		case 14: ExecuteEffectProbe(); break;
 		}
 	}
 }
