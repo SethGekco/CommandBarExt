@@ -35,6 +35,8 @@
 #include <ObjectClass.h>
 #include <Helpers/Cast.h>
 
+#include <vector>
+
 #include <Commands/Commands.h> // Phobos submodule: MakeCommand<> + CATEGORY_*
 
 #include <Syringe.h>
@@ -71,6 +73,72 @@ namespace CommandBarProbe
 	// Phase 1: Hunt = vanilla Mission::Hunt via MegaMission events, one per
 	// selected mobile armed techno we own. Events carry the whole decision,
 	// so this is multiplayer-synced by construction.
+	// -----------------------------------------------------------------------
+	// The 128-per-frame ceiling.
+	//
+	// EventClass::OutList is QueueClass<EventClass, 128>. Vanilla's own order
+	// path checks `cmp [OutList.Count], 0x80; jge bail` at 0x646EF5 and drops
+	// the event on the floor — no message, no retry. One click on a 128-unit
+	// army therefore fills the entire outgoing queue for that frame, and
+	// anything past 128 (or any other order issued the same frame, by us or
+	// by the player) is silently lost. Rex's log caught it dead on:
+	// selected=128 eligible=128 queued=128, OutList 0 -> 128.
+	//
+	// So don't dump everything at once: queue the orders and drain them over
+	// successive frames, always leaving headroom below the drop threshold.
+	// Ordering is preserved and only the local client ever adds its own
+	// events, so this changes timing, not outcomes — sync-safe.
+	//
+	// Entries are TargetClass, not pointers: a unit that dies before its
+	// order is sent resolves to nothing, exactly like a vanilla order queued
+	// against a unit that dies in the same frame. No dangling reads.
+	// -----------------------------------------------------------------------
+	namespace HuntQueue
+	{
+		struct PendingOrder
+		{
+			TargetClass Whom;
+			int HouseIndex;
+		};
+
+		static std::vector<PendingOrder> Pending;
+		static size_t Cursor = 0;
+
+		// Stay below vanilla's 0x80 drop point so other events still fit.
+		static constexpr int OutListSoftCap = 112;
+
+		static void Reset()
+		{
+			Pending.clear();
+			Cursor = 0;
+		}
+
+		static int Flush()
+		{
+			int sent = 0;
+
+			while (Cursor < Pending.size()
+				&& EventClass::OutList.Count < OutListSoftCap)
+			{
+				const auto& order = Pending[Cursor];
+
+				EventClass event(order.HouseIndex, order.Whom, Mission::Hunt,
+					TargetClass(), TargetClass(), TargetClass());
+
+				if (!EventClass::OutList.Add(event))
+					break; // queue filled from elsewhere; resume next frame
+
+				++Cursor;
+				++sent;
+			}
+
+			if (Cursor >= Pending.size())
+				Reset();
+
+			return sent;
+		}
+	}
+
 	static void ExecuteHunt()
 	{
 		// Rex reports a repro where only ONE of N selected units went
@@ -107,16 +175,8 @@ namespace CommandBarProbe
 
 			++eligible;
 
-			EventClass event(HouseClass::CurrentPlayer->ArrayIndex,
-				TargetClass(pFoot), Mission::Hunt,
-				TargetClass(), TargetClass(), TargetClass());
-			const bool added = EventClass::OutList.Add(event);
-			if (added)
-				++queued;
-
-			Debug::Log("[CommandBarExt] Hunt order %s (mission now %d) "
-				"add=%d\n", pFoot->GetTechnoType()->ID,
-				(int)pFoot->CurrentMission, added);
+			HuntQueue::Pending.push_back(
+				{ TargetClass(pFoot), HouseClass::CurrentPlayer->ArrayIndex });
 
 			// Voice feedback from the first unit ordered, vanilla-style.
 			if (eligible == 1)
@@ -129,8 +189,12 @@ namespace CommandBarProbe
 			}
 		}
 
-		Debug::Log("[CommandBarExt] Hunt: selected=%d eligible=%d queued=%d "
-			"OutList %d -> %d\n", selected, eligible, queued,
+		// Send what fits now; the frame hook drains the rest.
+		queued = HuntQueue::Flush();
+
+		Debug::Log("[CommandBarExt] Hunt: selected=%d eligible=%d sent=%d "
+			"deferred=%d OutList %d -> %d\n", selected, eligible, queued,
+			(int)(HuntQueue::Pending.size() - HuntQueue::Cursor),
 			outBefore, EventClass::OutList.Count);
 	}
 
@@ -340,6 +404,10 @@ namespace HuntFix
 	// instructions — same frame, same thread, no lifetime concerns.
 	static HouseClass* PendingTargetHouse = nullptr;
 
+	// Per-frame census, reported and cleared by the frame hook.
+	static int FallbackThisFrame = 0;
+	static int RetargetedThisFrame = 0;
+
 	static bool IsHuntableEnemy(HouseClass* pOwner, HouseClass* pHouse)
 	{
 		return pHouse && pHouse != pOwner && !pHouse->Defeated
@@ -386,6 +454,39 @@ namespace HuntFix
 	}
 }
 
+// Drains deferred Hunt orders, one batch per logic frame. 0x55B6FC sits at a
+// join point inside LogicClass::Update, between Phobos' AI_After (0x55B6B3)
+// and Kratos' Update_Late (0x55B719) — both reachable paths converge here, so
+// it runs every frame, and the 8 stolen bytes are a single `mov [esp+0x10],
+// imm32` (absolute immediate, not a relative branch, so `return 0` is safe).
+DEFINE_HOOK(0x55B6FC, LogicClass_Update_DrainHuntQueue, 0x8)
+{
+	if (!HouseClass::CurrentPlayer)
+	{
+		CommandBarProbe::HuntQueue::Reset(); // scenario ended mid-drain
+		return 0;
+	}
+
+	if (const int sent = CommandBarProbe::HuntQueue::Flush())
+	{
+		Debug::Log("[CommandBarExt] Hunt drain: sent=%d deferred=%d\n", sent,
+			(int)(CommandBarProbe::HuntQueue::Pending.size()
+				- CommandBarProbe::HuntQueue::Cursor));
+	}
+
+	// Per-frame census of units our fallback is actually driving, so the next
+	// in-game run says outright whether a ceiling remains and where it bites.
+	if (HuntFix::FallbackThisFrame)
+	{
+		Debug::Log("[CommandBarExt] Hunt fallback: units=%d retargeted=%d\n",
+			HuntFix::FallbackThisFrame, HuntFix::RetargetedThisFrame);
+		HuntFix::FallbackThisFrame = 0;
+		HuntFix::RetargetedThisFrame = 0;
+	}
+
+	return 0;
+}
+
 DEFINE_HOOK(0x4D54EE, FootClass_Mission_Hunt_PlayerSeeksEnemy, 0x6)
 {
 	enum { UseEngineFallback = 0x4D5506, Vanilla = 0 };
@@ -397,10 +498,13 @@ DEFINE_HOOK(0x4D54EE, FootClass_Mission_Hunt_PlayerSeeksEnemy, 0x6)
 	if (!pFoot || !pFoot->Owner || !pFoot->Owner->IsControlledByHuman())
 		return Vanilla;
 
+	++HuntFix::FallbackThisFrame;
+
 	auto pEnemy = HuntFix::PickEnemyHouse(pFoot);
 	if (!pEnemy)
 		return Vanilla; // nothing to hunt — idle exactly like vanilla
 
+	++HuntFix::RetargetedThisFrame;
 	HuntFix::PendingTargetHouse = pEnemy;
 	return UseEngineFallback;
 }
