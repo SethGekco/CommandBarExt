@@ -46,7 +46,10 @@
 #include <FootClass.h>
 #include <CellClass.h>
 #include <HouseClass.h>
+#include <MessageListClass.h>
+#include <RulesClass.h>
 
+#include <cwchar>
 #include <unordered_map>
 #include <vector>
 
@@ -141,10 +144,27 @@ namespace NoGoZone
 
 		// A unit that is already inside a zone must be able to walk out of
 		// it, so only refuse cells when the unit is not standing in one.
+		//
+		// NOTE this is exactly why the first in-game test showed nothing:
+		// the button centres the zone on a SELECTED unit, so that unit is
+		// inside it and permanently exempt. Moving the anchor unit therefore
+		// demonstrates nothing. Test by moving a DIFFERENT unit across.
 		CellStruct here {};
 		pObject->GetMapCoords(&here);
 		if (IsBlockedFor(here, house))
 			return false;
+
+		// Decisive evidence that the gate actually fires. Budgeted: this is
+		// a ~776-calls-per-frame path.
+		static int refusalBudget = 30;
+		if (refusalBudget > 0)
+		{
+			--refusalBudget;
+			auto pType = pTechno->GetTechnoType();
+			Debug::Log("[CommandBarExt] no-go: REFUSED %s (house %d) cell "
+				"%d,%d\n", pType ? pType->ID : "?", house,
+				pDestCell->MapCoords.X, pDestCell->MapCoords.Y);
+		}
 
 		return true;
 	}
@@ -165,11 +185,21 @@ namespace NoGoZone
 			}
 		}
 
+		// The first build gave no feedback at all — no cursor change, no
+		// sound, nothing drawn — so a working zone was indistinguishable
+		// from a dead button. Say something on screen.
+		wchar_t message[128];
+
 		if (!pAnchor)
 		{
 			Zones.clear();
 			Rebuild();
 			Debug::Log("[CommandBarExt] no-go: cleared (nothing selected)\n");
+
+			swprintf(message, 128, L"No-go zones cleared.");
+			MessageListClass::Instance->PrintMessage(message,
+				RulesClass::Instance->MessageDelay,
+				pPlayer->ColorSchemeIndex);
 			return;
 		}
 
@@ -182,6 +212,13 @@ namespace NoGoZone
 		Debug::Log("[CommandBarExt] no-go: placed at %d,%d r=%d for house %d "
 			"(LOCAL ONLY — skirmish, not MP-safe yet)\n",
 			center.X, center.Y, DefaultRadius, pPlayer->ArrayIndex);
+
+		swprintf(message, 128,
+			L"No-go zone %d at %d,%d (r=%d). Move a unit from OUTSIDE across "
+			L"it — the unit it was placed on is exempt.",
+			(int)Zones.size(), center.X, center.Y, DefaultRadius);
+		MessageListClass::Instance->PrintMessage(message,
+			RulesClass::Instance->MessageDelay, pPlayer->ColorSchemeIndex);
 	}
 }
 
