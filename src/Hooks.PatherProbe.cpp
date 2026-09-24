@@ -197,7 +197,7 @@ namespace NoGoZone
 			Debug::Log("[CommandBarExt] no-go: cleared (nothing selected)\n");
 
 			swprintf(message, 128, L"No-go zones cleared.");
-			MessageListClass::Instance->PrintMessage(message,
+			MessageListClass::Instance.PrintMessage(message,
 				RulesClass::Instance->MessageDelay,
 				pPlayer->ColorSchemeIndex);
 			return;
@@ -217,7 +217,7 @@ namespace NoGoZone
 			L"No-go zone %d at %d,%d (r=%d). Move a unit from OUTSIDE across "
 			L"it — the unit it was placed on is exempt.",
 			(int)Zones.size(), center.X, center.Y, DefaultRadius);
-		MessageListClass::Instance->PrintMessage(message,
+		MessageListClass::Instance.PrintMessage(message,
 			RulesClass::Instance->MessageDelay, pPlayer->ColorSchemeIndex);
 	}
 }
