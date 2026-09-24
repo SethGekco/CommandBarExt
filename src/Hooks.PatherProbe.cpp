@@ -48,6 +48,8 @@
 #include <HouseClass.h>
 #include <MessageListClass.h>
 #include <RulesClass.h>
+#include <MapClass.h>
+#include <Unsorted.h>
 
 #include <cwchar>
 #include <unordered_map>
@@ -72,7 +74,7 @@ namespace NoGoZone
 	// Until the button config lands in INI, one sensible default.
 	static constexpr int DefaultRadius = 5;
 
-	static std::vector<Zone> Zones;
+	std::vector<Zone> Zones; // non-static: the draw hook reads it
 
 	// cell key -> bitmask of houses that may NOT path through it. Rebuilt only
 	// when a zone changes, so the hot path is one hash lookup and never a scan.
@@ -220,6 +222,43 @@ namespace NoGoZone
 		MessageListClass::Instance.PrintMessage(message,
 			RulesClass::Instance->MessageDelay, pPlayer->ColorSchemeIndex);
 	}
+}
+
+// --- Visualiser -------------------------------------------------------------
+// A zone you cannot see is unusable — the first in-game test looked like a
+// dead button purely because nothing was drawn. Draw a ring per zone using
+// the engine's own radial-indicator helper.
+//
+// Seat: 0x6DBE74 is the tactical "draw additional radial indicators" pass;
+// Phobos already chains two hooks there (SuperLinesCircles and
+// DrawDistributionRange), so this is a third same-address chain — legal, and
+// we proved 3-way chaining works this session at 0x533066. Same stolen size
+// (7) as the others, and `return 0` lets vanilla and Phobos both continue.
+//
+// Rendering is client-side and unsynced, which is exactly what we want: draw
+// only the LOCAL player's zones. A no-go zone is private planning
+// information, and it must not leak to opponents — that also rules out
+// spawning animations, which everyone would see.
+DEFINE_HOOK(0x6DBE74, TacticalClass_DrawRadialIndicators_NoGoZones, 0x7)
+{
+	auto pPlayer = HouseClass::CurrentPlayer;
+	if (!pPlayer || NoGoZone::Zones.empty())
+		return 0;
+
+	for (const auto& zone : NoGoZone::Zones)
+	{
+		if (zone.HouseIndex != pPlayer->ArrayIndex)
+			continue; // never reveal another house's zones
+
+		CoordStruct coords = CellClass::Cell2Coord(zone.Center);
+		coords.Z = MapClass::Instance.GetCellFloorHeight(coords);
+
+		ColorStruct color { 255, 40, 40 }; // red = "my units will not go here"
+		Game::DrawRadialIndicator(false, true, coords, color,
+			static_cast<float>(zone.Radius), false, true);
+	}
+
+	return 0;
 }
 
 // --- The two per-unit gates -------------------------------------------------
