@@ -39,6 +39,8 @@
 #include <WarheadTypeClass.h>
 #include <Helpers/Cast.h>
 
+#include <cstdarg>
+#include <cstdio>
 #include <vector>
 
 #include <Commands/Commands.h> // Phobos submodule: MakeCommand<> + CATEGORY_*
@@ -179,6 +181,18 @@ namespace CommandBarProbe
 			}
 
 			++eligible;
+
+			// Per-type census: "specific types stop working" is only
+			// answerable if the log says which types were ordered. Only
+			// infantry (0x51F60C) and NON-deploying vehicles (0x73F08C)
+			// delegate to FootClass::Mission_Hunt, so aircraft and
+			// DeploysInto= vehicles never reach our fallback at all.
+			if (eligible <= 40)
+			{
+				Debug::Log("[CommandBarExt] Hunt order %s (rtti %d, "
+					"mission %d)\n", pFoot->GetTechnoType()->ID,
+					(int)pFoot->WhatAmI(), (int)pFoot->CurrentMission);
+			}
 
 			HuntQueue::Pending.push_back(
 				{ TargetClass(pFoot), HouseClass::CurrentPlayer->ArrayIndex });
@@ -486,13 +500,29 @@ namespace HuntFix
 	using GetBaseCenter_t = CellStruct* (__fastcall*)(HouseClass*, void*, CellStruct*);
 	static const auto GetBaseCenter = reinterpret_cast<GetBaseCenter_t>(0x50DEF0);
 
-	// Set by hook A, consumed by hook B on the immediately following
-	// instructions — same frame, same thread, no lifetime concerns.
-	static HouseClass* PendingTargetHouse = nullptr;
-
 	// Per-frame census, reported and cleared by the frame hook.
 	static int FallbackThisFrame = 0;
 	static int RetargetedThisFrame = 0;
+
+	// Last run logged NEITHER the census nor a drain line. Both live in the
+	// frame hook, so that is consistent with two very different stories:
+	// the fallback never firing, or 0x55B6FC never executing. Log straight
+	// from the fallback itself so the two can never be confused again.
+	static void LogBudgeted(const char* format, ...)
+	{
+		static int budget = 40;
+		if (budget <= 0)
+			return;
+		--budget;
+
+		char message[256];
+		va_list args;
+		va_start(args, format);
+		vsnprintf(message, sizeof(message), format, args);
+		va_end(args);
+
+		Debug::Log("[CommandBarExt] hunt fallback: %s\n", message);
+	}
 
 	static bool IsHuntableEnemy(HouseClass* pOwner, HouseClass* pHouse)
 	{
@@ -501,7 +531,16 @@ namespace HuntFix
 			&& !pOwner->IsAlliedWith(pHouse);
 	}
 
-	static HouseClass* PickEnemyHouse(FootClass* pFoot)
+	// Rex, after testing: "hunt rarely goes after nearest targets". Correct —
+	// and it was our doing. Redirecting the engine's fallback only let us
+	// choose a HOUSE, and the engine then walks to that house's base centre.
+	// A unit would march past three enemy tanks to reach a distant base.
+	//
+	// So pick the nearest enemy OBJECT instead and drive to it ourselves.
+	// Deterministic: TechnoClass::Array in index order, squared distance,
+	// strictly-less so the lowest index wins ties. No local-player state, no
+	// unsynced RNG.
+	static TechnoClass* PickNearestEnemy(FootClass* pFoot)
 	{
 		auto pOwner = pFoot->Owner;
 		if (!pOwner)
@@ -510,28 +549,30 @@ namespace HuntFix
 		CellStruct here {};
 		pFoot->GetMapCoords(&here);
 
-		HouseClass* pBest = nullptr;
+		TechnoClass* pBest = nullptr;
 		int bestDistance = 0;
 
-		for (const auto pHouse : HouseClass::Array)
+		for (const auto pTechno : TechnoClass::Array)
 		{
-			if (!IsHuntableEnemy(pOwner, pHouse))
+			if (!pTechno || pTechno == pFoot || pTechno->InLimbo
+				|| !pTechno->IsAlive || !pTechno->Health)
+			{
+				continue;
+			}
+
+			if (!IsHuntableEnemy(pOwner, pTechno->Owner))
 				continue;
 
-			CellStruct base {};
-			if (!GetBaseCenter(pHouse, nullptr, &base))
-				continue;
-			if (base.X == 0 && base.Y == 0)
-				continue;
+			CellStruct there {};
+			pTechno->GetMapCoords(&there);
 
-			const int dx = base.X - here.X;
-			const int dy = base.Y - here.Y;
+			const int dx = there.X - here.X;
+			const int dy = there.Y - here.Y;
 			const int distance = dx * dx + dy * dy;
 
-			// Strictly-less keeps the lowest array index on a tie.
 			if (!pBest || distance < bestDistance)
 			{
-				pBest = pHouse;
+				pBest = pTechno;
 				bestDistance = distance;
 			}
 		}
@@ -552,6 +593,13 @@ DEFINE_HOOK(0x55B6FC, LogicClass_Update_DrainHuntQueue, 0x8)
 		CommandBarProbe::HuntQueue::Reset(); // scenario ended mid-drain
 		return 0;
 	}
+
+	// Unconditional heartbeat: last run logged nothing from this hook, which
+	// could equally mean "nothing to report" or "this seat never executes".
+	// Never leave those two indistinguishable again.
+	static int heartbeat = 0;
+	if (++heartbeat % 450 == 0)
+		Debug::Log("[CommandBarExt] frame hook alive (tick %d)\n", heartbeat);
 
 	if (const int sent = CommandBarProbe::HuntQueue::Flush())
 	{
@@ -575,38 +623,41 @@ DEFINE_HOOK(0x55B6FC, LogicClass_Update_DrainHuntQueue, 0x8)
 
 DEFINE_HOOK(0x4D54EE, FootClass_Mission_Hunt_PlayerSeeksEnemy, 0x6)
 {
-	enum { UseEngineFallback = 0x4D5506, Vanilla = 0 };
+	// 0x4D5582 is the function's own "done" join point: it computes and
+	// returns the re-check delay. Doing the work ourselves and landing there
+	// keeps us on the engine's normal exit path.
+	enum { Done = 0x4D5582, Vanilla = 0 };
 
 	GET(FootClass*, pFoot, ESI);
-
-	HuntFix::PendingTargetHouse = nullptr;
 
 	if (!pFoot || !pFoot->Owner || !pFoot->Owner->IsControlledByHuman())
 		return Vanilla;
 
 	++HuntFix::FallbackThisFrame;
 
-	auto pEnemy = HuntFix::PickEnemyHouse(pFoot);
+	auto pEnemy = HuntFix::PickNearestEnemy(pFoot);
 	if (!pEnemy)
-		return Vanilla; // nothing to hunt — idle exactly like vanilla
-
-	++HuntFix::RetargetedThisFrame;
-	HuntFix::PendingTargetHouse = pEnemy;
-	return UseEngineFallback;
-}
-
-DEFINE_HOOK(0x4D5514, FootClass_Mission_Hunt_RetargetHouse, 0x6)
-{
-	enum { SkipStolenLoad = 0x4D551A };
-
-	if (auto pEnemy = HuntFix::PendingTargetHouse)
 	{
-		HuntFix::PendingTargetHouse = nullptr;
-		R->ECX(pEnemy);
-		return SkipStolenLoad;
+		// Nothing left to hunt — idle exactly like vanilla rather than
+		// inventing behaviour.
+		HuntFix::LogBudgeted("no enemy found for %s",
+			pFoot->GetTechnoType()->ID);
+		return Vanilla;
 	}
 
-	return 0; // AI path — leave the vanilla local-player house alone
+	auto pCell = MapClass::Instance->TryGetCellAt(pEnemy->GetCoords());
+	if (!pCell)
+		return Vanilla;
+
+	++HuntFix::RetargetedThisFrame;
+
+	HuntFix::LogBudgeted("%s -> nearest enemy %s",
+		pFoot->GetTechnoType()->ID, pEnemy->GetTechnoType()->ID);
+
+	pFoot->SetDestination(pCell, true);
+	pFoot->ForceMission(Mission::Move);
+
+	return Done;
 }
 
 // --- 6. Command registration ----------------------------------------------
