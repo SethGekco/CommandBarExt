@@ -24,6 +24,7 @@
     <ClCompile Include="src\CommandBarExt.cpp" />
     <ClCompile Include="src\Phobos.cpp" />
     <ClCompile Include="src\Hooks.Probe.cpp" />
+    <ClCompile Include="src\Hooks.PatherProbe.cpp" />
     <ClCompile Include="YRpp\StaticInits.cpp" />
     <!-- Phobos utility implementations -->
     <ClCompile Include="Phobos\src\Utilities\Debug.cpp" />
