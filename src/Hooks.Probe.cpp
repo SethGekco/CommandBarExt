@@ -645,7 +645,9 @@ DEFINE_HOOK(0x4D54EE, FootClass_Mission_Hunt_PlayerSeeksEnemy, 0x6)
 		return Vanilla;
 	}
 
-	auto pCell = MapClass::Instance->TryGetCellAt(pEnemy->GetCoords());
+	// DEFINE_REFERENCE yields a reference, not a pointer — same trap as
+	// ObjectClass::CurrentObjects and CommandClass::Array. Use '.'.
+	auto pCell = MapClass::Instance.TryGetCellAt(pEnemy->GetCoords());
 	if (!pCell)
 		return Vanilla;
 
