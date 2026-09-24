@@ -43,6 +43,8 @@
 #include <cstdio>
 #include <vector>
 
+#include "NoGoZone.h"
+
 #include <Commands/Commands.h> // Phobos submodule: MakeCommand<> + CATEGORY_*
 
 #include <Syringe.h>
@@ -67,6 +69,7 @@ namespace CommandBarProbe
 		{ "Hunt", "Tip:Hunt", false, 12 },
 		{ "AggressiveStance", "Tip:AggStance", false, 13 },
 		{ "EffectProbe", "Tip:EffectProbe", false, 14 },
+		{ "NoGoZone", "Tip:NoGoZone", false, 15 },
 	};
 
 	static const NewButton* FromID(int id)
@@ -321,6 +324,7 @@ namespace CommandBarProbe
 		case 12: ExecuteHunt(); break;
 		case 13: ExecuteNamedCommand("AggressiveStance"); break;
 		case 14: ExecuteEffectProbe(); break;
+		case 15: NoGoZone::ToggleAtSelection(); break;
 		}
 	}
 }
