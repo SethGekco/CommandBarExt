@@ -70,6 +70,8 @@ namespace CommandBarProbe
 		{ "AggressiveStance", "Tip:AggStance", false, 13 },
 		{ "EffectProbe", "Tip:EffectProbe", false, 14 },
 		{ "NoGoZone", "Tip:NoGoZone", false, 15 },
+		{ "NoGoZoneFollow", "Tip:NoGoZoneFollow", false, 16 },
+		{ "NoGoZonePlace", "Tip:NoGoZonePlace", false, 17 },
 	};
 
 	static const NewButton* FromID(int id)
@@ -324,7 +326,9 @@ namespace CommandBarProbe
 		case 12: ExecuteHunt(); break;
 		case 13: ExecuteNamedCommand("AggressiveStance"); break;
 		case 14: ExecuteEffectProbe(); break;
-		case 15: NoGoZone::ToggleAtSelection(); break;
+		case 15: NoGoZone::ToggleAtSelection(false); break;
+		case 16: NoGoZone::ToggleAtSelection(true); break;
+		case 17: NoGoZone::EnterPlacementMode(); break;
 		}
 	}
 }
@@ -604,6 +608,8 @@ DEFINE_HOOK(0x55B6FC, LogicClass_Update_DrainHuntQueue, 0x8)
 	static int heartbeat = 0;
 	if (++heartbeat % 450 == 0)
 		Debug::Log("[CommandBarExt] frame hook alive (tick %d)\n", heartbeat);
+
+	NoGoZone::UpdateAnchored();
 
 	if (const int sent = CommandBarProbe::HuntQueue::Flush())
 	{
