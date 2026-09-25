@@ -1,6 +1,7 @@
 #pragma once
 
-struct CellStruct;
+#include <GeneralStructures.h> // CellStruct is Vector2D<short>, an alias
+                               // -- it cannot be forward-declared.
 class TechnoClass;
 
 // Per-house no-go zones. See Hooks.PatherProbe.cpp for the mechanism and the
