@@ -21,6 +21,12 @@ namespace NoGoZone
 	// Once per logic frame: move anchored zones, drop zones whose anchor died.
 	void UpdateAnchored();
 
+	// Remove every zone this player owns.
+	void ClearAll();
+
+	// Zone radius in cells. Read once from RA2MD.ini at startup; 5 if unset.
+	extern int DefaultRadius;
+
 	// Shared by the click hook (defined in Hooks.PatherProbe.cpp).
 	extern bool PlacementArmed;
 	void PlaceOrRemoveAt(const CellStruct& cell, TechnoClass* pAnchor);

@@ -37,6 +37,7 @@
 #include <MapClass.h>
 #include <ObjectClass.h>
 #include <WarheadTypeClass.h>
+#include <CCINIClass.h>
 #include <Helpers/Cast.h>
 
 #include <cstdarg>
@@ -706,9 +707,108 @@ public:
 	}
 };
 
+
+// ---------------------------------------------------------------------------
+// Zone tools as hotkey commands — OPT-IN.
+//
+// Registration is gated because a command that exists is a permanent row in
+// the player's keyboard-config list whether or not they use the feature, and
+// registration cannot be undone once done. Off by default; switch on with:
+//
+//   [CommandBarExt]        ; in RA2MD.ini, NOT rulesmd
+//   ZoneHotkeys=yes
+//   ZoneRadius=5           ; cells
+//
+// WHY RA2MD.ini. Command registration runs during init, BEFORE rules are
+// parsed, so a rulesmd toggle could not be read in time -- the same constraint
+// SuperWeaponExt documents for its per-SW hotkey pool. RA2MD.ini is the user
+// settings file the engine loads early (it is where Phobos reads its own
+// config, at OptionsClass::LoadSettings 0x5FACDF).
+//
+// The exact ordering of LoadSettings vs this hook is NOT verified, so the
+// value read is logged. If the log says ZoneHotkeys=0 when the INI says yes,
+// the read is simply too early and the fix is to cache it from a later seat --
+// a visible failure rather than a silent one.
+// ---------------------------------------------------------------------------
+
+namespace ZoneCommands
+{
+	template <int Which>
+	class ZoneCommandClass : public CommandClass
+	{
+	public:
+		virtual const char* GetName() const override
+		{
+			switch (Which)
+			{
+			case 0:  return "NoGoZoneAtUnit";
+			case 1:  return "NoGoZoneFollow";
+			case 2:  return "NoGoZonePlace";
+			default: return "NoGoZoneClear";
+			}
+		}
+
+		virtual const wchar_t* GetUIName() const override
+		{
+			switch (Which)
+			{
+			case 0:  return L"No-Go Zone: on selected unit";
+			case 1:  return L"No-Go Zone: follow selected unit";
+			case 2:  return L"No-Go Zone: place on map";
+			default: return L"No-Go Zone: clear all";
+			}
+		}
+
+		virtual const wchar_t* GetUICategory() const override
+		{
+			return CATEGORY_INTERFACE;
+		}
+
+		virtual const wchar_t* GetUIDescription() const override
+		{
+			switch (Which)
+			{
+			case 0:  return L"Mark an area your units will path around. Trigger again inside one to remove it.";
+			case 1:  return L"Mark an area that follows the selected unit.";
+			case 2:  return L"Then click the map to place, or click an existing zone to remove it.";
+			default: return L"Remove every no-go zone.";
+			}
+		}
+
+		virtual void Execute(WWKey) const override
+		{
+			switch (Which)
+			{
+			case 0:  NoGoZone::ToggleAtSelection(false); break;
+			case 1:  NoGoZone::ToggleAtSelection(true);  break;
+			case 2:  NoGoZone::EnterPlacementMode();     break;
+			default: NoGoZone::ClearAll();               break;
+			}
+		}
+	};
+}
+
 DEFINE_HOOK(0x533066, CommandClassCallback_Register_CommandBarExt, 0x6)
 {
 	MakeCommand<HuntUnitsCommandClass>();
+
+	NoGoZone::DefaultRadius =
+		CCINIClass::INI_RA2MD.ReadInteger("CommandBarExt", "ZoneRadius", 5);
+
+	const bool zoneHotkeys =
+		CCINIClass::INI_RA2MD.ReadBool("CommandBarExt", "ZoneHotkeys", false);
+
+	Debug::Log("[CommandBarExt] config: ZoneHotkeys=%d ZoneRadius=%d\n",
+		zoneHotkeys ? 1 : 0, NoGoZone::DefaultRadius);
+
+	if (zoneHotkeys)
+	{
+		MakeCommand<ZoneCommands::ZoneCommandClass<0>>();
+		MakeCommand<ZoneCommands::ZoneCommandClass<1>>();
+		MakeCommand<ZoneCommands::ZoneCommandClass<2>>();
+		MakeCommand<ZoneCommands::ZoneCommandClass<3>>();
+		Debug::Log("[CommandBarExt] zone hotkeys registered (4)\n");
+	}
 	// Liveness proof for the third same-address chain -- see file header.
 	Debug::Log("[CommandBarExt] command 'HuntUnits' registered\n");
 	return 0;

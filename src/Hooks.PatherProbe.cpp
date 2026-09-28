@@ -81,8 +81,11 @@ namespace NoGoZone
 		TechnoClass* Anchor;
 	};
 
-	// Until button config lands in INI, one sensible default.
-	static constexpr int DefaultRadius = 5;
+	// Zone radius in cells. Read once from RA2MD.ini [CommandBarExt] at
+	// startup -- see Hooks.Probe.cpp. Deliberately NOT rulesmd: this is a
+	// player's planning-tool preference, not mod content, and reading it from
+	// RA2MD.ini avoids adding a rules-parse hook for one integer.
+	int DefaultRadius = 5;
 
 	std::vector<Zone> Zones; // non-static: the draw hook reads it
 
@@ -234,6 +237,17 @@ namespace NoGoZone
 	}
 
 	// --- Public tools -------------------------------------------------------
+
+	void ClearAll()
+	{
+		if (Zones.empty())
+			return;
+
+		Zones.clear();
+		Rebuild();
+		Debug::Log("[CommandBarExt] no-go: cleared all\n");
+		Announce(L"No-go zones cleared.");
+	}
 
 	void ToggleAtSelection(bool follow)
 	{
